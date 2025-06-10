@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Output directory: {}", output_dir);
     println!("RPC endpoint: {}", rpc_endpoint);
 
-    let pm = PackageManager::new(Some(rpc_endpoint.to_string()));
+    let pm = PackageManager::new(Some(rpc_endpoint.to_string()), PathBuf::from("cache"));
     match pm.download_package(pkg_path, &target_path).await {
         Ok(()) => {
             println!("Download complete!");

@@ -56,8 +56,12 @@ impl DiskStorage {
 
     /// Compute hash-based file path for a key
     fn entry_path(&self, key: &str) -> PathBuf {
+        // to maintain search/deletion performance even when there are many files,
+        // I choose to divide and store files into subdirs using the first two digits of the hash.
         let hash = blake3::hash(key.as_bytes()).to_hex();
-        let subdir = &hash[0..2]; // first 2 chars of hash
+        let subdir = &hash[0..2];
+        // still json is expensive for parsing and writing, but it's human readable
+        // need to consider to use CBOR or bincode instead of JSON.
         self.cache_dir.join(subdir).join(format!("{}.json", hash))
     }
 

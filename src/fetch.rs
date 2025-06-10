@@ -1,11 +1,16 @@
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::{Client, Error as ReqwestError};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 use thiserror::Error;
 
+use crate::cache::{CacheError, HybridCache};
 use crate::query::{RpcParams, RpcRequest, RpcResponse};
 use crate::DEFAULT_RPC_ENDPOINT;
+
+const MAX_ENTRIES: u64 = 1_000;
+const TTL: u64 = 24 * 3600;
 
 #[derive(Error, Debug)]
 pub enum PackageManagerError {
@@ -25,22 +30,33 @@ pub enum PackageManagerError {
     PackageFiles(String),
     #[error("Failed to get file content for {file}: {error}")]
     FileContent { file: String, error: String },
+    #[error("Cache error: {0}")]
+    Cache(#[from] CacheError),
 }
 
 pub struct PackageManager {
-    pub rpc_endpoint: String,
-    pub http_client: Client,
+    rpc_endpoint: String,
+    http_client: Client,
+    cache: HybridCache,
 }
 
 impl PackageManager {
     /// Creates a new PackageManager instance
-    pub fn new(rpc_endpoint: Option<String>) -> Self {
+    pub fn new(rpc_endpoint: Option<String>, cache_dir: PathBuf) -> Self {
         let endpoint = rpc_endpoint.unwrap_or_else(|| DEFAULT_RPC_ENDPOINT.to_string());
+        let http_client = Client::new();
+        let cache = HybridCache::new(cache_dir, Duration::from_secs(TTL), MAX_ENTRIES);
 
         Self {
             rpc_endpoint: endpoint,
-            http_client: Client::new(),
+            http_client,
+            cache,
         }
+    }
+
+    /// Returns the RPC endpoint
+    pub fn rpc_endpoint(&self) -> &str {
+        &self.rpc_endpoint
     }
 
     /// Downloads a package and its files to the target directory
@@ -51,45 +67,51 @@ impl PackageManager {
     ) -> Result<(), PackageManagerError> {
         // Create target directory if it doesn't exist
         if !target_dir.exists() {
-            fs::create_dir_all(target_dir).map_err(|e| {
-                PackageManagerError::DirectoryCreation(format!(
-                    "Failed to create {}: {}",
-                    target_dir.display(),
-                    e
-                ))
-            })?;
+            fs::create_dir_all(target_dir)
+                .map_err(|e| PackageManagerError::DirectoryCreation(e.to_string()))?;
         }
 
-        // Get package files list
-        let files = self
-            .get_package_files(pkg_path)
-            .await
-            .map_err(|e| PackageManagerError::PackageFiles(e.to_string()))?;
+        let files_key = format!("files:{}", pkg_path);
+        let files: Vec<String> = if let Some(raw) = self.cache.get(&files_key).await? {
+            serde_json::from_str(&raw)?
+        } else {
+            let list = self
+                .get_package_files(pkg_path)
+                .await
+                .map_err(|e| PackageManagerError::PackageFiles(e.to_string()))?;
+            let serialized = serde_json::to_string(&list)?;
+            self.cache.set(&files_key, &serialized).await?;
+            list
+        };
 
-        // Download each file
+        // for each file, fetch content via cache or RPC
         for file in files {
-            if file.trim().is_empty() {
-                continue; // Skip empty lines
+            let trimmed = file.trim();
+            if trimmed.is_empty() {
+                continue;
             }
+            let file_path = format!("{}/{}", pkg_path, trimmed);
+            let content_key = format!("file:{}", file_path);
+            let content = if let Some(raw) = self.cache.get(&content_key).await? {
+                raw
+            } else {
+                let cnt = self.get_file_content(&file_path).await.map_err(|e| {
+                    PackageManagerError::FileContent {
+                        file: file.clone(),
+                        error: e.to_string(),
+                    }
+                })?;
+                self.cache.set(&content_key, &cnt).await?;
+                cnt
+            };
 
-            let file_path = format!("{}/{}", pkg_path, file.trim());
-            let content = self.get_file_content(&file_path).await.map_err(|e| {
-                PackageManagerError::FileContent {
-                    file: file.clone(),
-                    error: e.to_string(),
-                }
-            })?;
-
-            // Create file
-            let target_path = target_dir.join(&file);
-
-            // Create parent directories if needed
-            if let Some(parent) = target_path.parent() {
-                fs::create_dir_all(parent)?;
+            // write to disk
+            let target = target_dir.join(&file);
+            if let Some(p) = target.parent() {
+                fs::create_dir_all(p)?;
             }
-
-            fs::write(&target_path, content.as_bytes())?;
-            println!("Downloaded: {}", target_path.display());
+            fs::write(&target, &content)?;
+            println!("Downloaded: {}", target.display());
         }
 
         Ok(())
