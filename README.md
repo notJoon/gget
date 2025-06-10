@@ -9,11 +9,11 @@ A package manager for downloading and managing packages through Gno.land RPC end
 ## Core Features
 
 - Package downloading
+- Local cache management
 
 TODO
 - Package dependency management
 - Package version management
-- Local cache management
 
 ## Installation
 
