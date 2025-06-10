@@ -1,7 +1,6 @@
 # gget
 
 [![Build Status](https://github.com/notJoon/gget/actions/workflows/main.yml/badge.svg)](https://github.com/notJoon/gget/actions/workflows/main.yml)
-[![codecov](https://codecov.io/gh/notJoon/gget/branch/main/graph/badge.svg)](https://codecov.io/gh/notJoon/gget)
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/notJoon/gget)](https://github.com/notJoon/gget/releases)
 
 A package manager for downloading and managing packages through Gno.land RPC endpoints.
