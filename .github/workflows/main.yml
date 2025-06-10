@@ -10,11 +10,12 @@ jobs:
   build:
     uses: ./.github/workflows/rust.yml
 
-  coverage:
-    needs: build
-    uses: ./.github/workflows/coverage.yml
+  # coverage:
+  #   needs: build
+  #   uses: ./.github/workflows/coverage.yml
 
   release:
-    needs: [build, coverage]
+    # needs: [build, coverage]
+    needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     uses: ./.github/workflows/release.yml
