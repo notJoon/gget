@@ -165,7 +165,7 @@ impl PackageManager {
 
         // if target dir exists, remove it
         if target_dir.exists() {
-            std::fs::remove_dir_all(target_dir).map_err(|e| PackageManagerError::Io(e))?;
+            std::fs::remove_dir_all(target_dir).map_err(PackageManagerError::Io)?;
         }
 
         // create parent dir if it doesn't exist
@@ -177,7 +177,7 @@ impl PackageManager {
         }
 
         // atomically move from temp to final destination
-        std::fs::rename(&temp_dir, target_dir).map_err(|e| PackageManagerError::Io(e))?;
+        std::fs::rename(&temp_dir, target_dir).map_err(PackageManagerError::Io)?;
 
         Ok(())
     }

@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target_path = PathBuf::from(output_dir);
 
     // dependency resolution
-    let resolve_deps = matches.get_flag("resolve-deps");
+    let _resolve_deps = matches.get_flag("resolve-deps");
     let validate = matches.get_flag("validate");
     let force = matches.get_flag("force");
 
