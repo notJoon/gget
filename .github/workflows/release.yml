@@ -30,6 +30,13 @@ jobs:
         cargo release --execute --no-confirm --no-publish --no-push --no-tag --no-verify
         VERSION=$(cargo metadata --format-version=1 | jq -r '.packages[0].version')
         echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+        # delete existing tag if exists
+        if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+          git tag -d "v$VERSION"
+          git push origin ":refs/tags/v$VERSION"
+        fi
+        
         git tag -a "v$VERSION" -m "Release v$VERSION"
         git push origin "v$VERSION"
         # wait for tag to be propagated to GitHub
