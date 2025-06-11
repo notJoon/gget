@@ -1,11 +1,13 @@
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::{Client, Error as ReqwestError};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
 use crate::cache::{CacheError, HybridCache};
+use crate::dependency::{DependencyResolver, PackageDependency};
 use crate::query::{RpcParams, RpcRequest, RpcResponse};
 use crate::DEFAULT_RPC_ENDPOINT;
 
@@ -117,6 +119,166 @@ impl PackageManager {
         Ok(())
     }
 
+    /// Downloads a package atomically to prevent partial downloads
+    pub async fn download_package_atomic(
+        &self,
+        pkg_path: &str,
+        target_dir: &Path,
+    ) -> Result<(), PackageManagerError> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // create a unique temp dir name
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir_name = format!(
+            "{}_tmp_{}",
+            target_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("package"),
+            timestamp,
+        );
+
+        let temp_dir = if let Some(parent) = target_dir.parent() {
+            parent.join(temp_dir_name)
+        } else {
+            PathBuf::from(temp_dir_name)
+        };
+
+        // ensure cleanup happens even if download fails
+        // automatically remove temp dir on drop with RAII pattern
+        struct TempDirGuard(PathBuf);
+        impl Drop for TempDirGuard {
+            fn drop(&mut self) {
+                if self.0.exists() {
+                    let _ = std::fs::remove_dir_all(&self.0);
+                }
+            }
+        }
+
+        let _guard = TempDirGuard(temp_dir.clone());
+
+        // download to temp dir first
+        self.download_package(pkg_path, &temp_dir).await?;
+
+        // if target dir exists, remove it
+        if target_dir.exists() {
+            std::fs::remove_dir_all(target_dir).map_err(|e| PackageManagerError::Io(e))?;
+        }
+
+        // create parent dir if it doesn't exist
+        if let Some(p) = target_dir.parent() {
+            if !p.exists() {
+                std::fs::create_dir_all(p)
+                    .map_err(|e| PackageManagerError::DirectoryCreation(e.to_string()))?;
+            }
+        }
+
+        // atomically move from temp to final destination
+        std::fs::rename(&temp_dir, target_dir).map_err(|e| PackageManagerError::Io(e))?;
+
+        Ok(())
+    }
+
+    async fn resolve_all_dependencies(
+        &self,
+        root_pkg: &str,
+    ) -> Result<HashMap<String, String>, PackageManagerError> {
+        let mut all_deps = HashMap::new();
+        let mut to_analyze = VecDeque::new();
+        let mut analyzed = HashSet::new();
+
+        to_analyze.push_back(root_pkg.to_string());
+
+        while let Some(pkg_path) = to_analyze.pop_front() {
+            if analyzed.contains(&pkg_path) {
+                continue;
+            }
+
+            let package_dep = self.analyze_package_dependencies(&pkg_path).await?;
+
+            // add new deps to analysis queue
+            for import in &package_dep.imports {
+                if !analyzed.contains(import) && !to_analyze.contains(import) {
+                    to_analyze.push_back(import.clone());
+                }
+            }
+
+            // add to result map
+            all_deps.insert(pkg_path.clone(), package_dep.name);
+            analyzed.insert(pkg_path);
+        }
+
+        Ok(all_deps)
+    }
+
+    async fn analyze_package_dependencies(
+        &self,
+        pkg_path: &str,
+    ) -> Result<PackageDependency, PackageManagerError> {
+        let files = self.get_package_files(pkg_path).await?;
+        let mut all_imports = HashSet::new();
+
+        let mut resolver = DependencyResolver::new()?;
+
+        for file in files {
+            let trimmed = file.trim();
+            if trimmed.is_empty() || !trimmed.ends_with(".gno") {
+                continue;
+            }
+
+            let file_path = format!("{}/{}", pkg_path, trimmed);
+            let content = self.get_file_content(&file_path).await?;
+
+            // reuse the same resolver instance for all files in the same package
+            let (_, imports) = resolver.extract_dependencies(&content)?;
+            all_imports.extend(imports);
+        }
+
+        Ok(PackageDependency {
+            name: pkg_path.to_string(),
+            imports: all_imports,
+            instability: 0.0,
+        })
+    }
+
+    pub async fn validate_package(&self, target_dir: &Path) -> Result<(), PackageManagerError> {
+        // when users deploy packages to the chain, the `gnokey` only recognizes and deploys
+        // `gno.mod` and `*.gno` files. Therefore, this check is actually meaningless.
+        let mut has_gno_files = false;
+
+        let mut resolver = DependencyResolver::new()?;
+
+        if let Ok(entries) = std::fs::read_dir(target_dir) {
+            for entry in entries.flatten() {
+                if let Some(ext) = entry.path().extension() {
+                    if ext == "gno" {
+                        has_gno_files = true;
+
+                        // basic syntax validation
+                        let content = std::fs::read_to_string(entry.path())?;
+                        match resolver.extract_dependencies(&content) {
+                            Ok(_) => continue,
+                            Err(e) => {
+                                return Err(PackageManagerError::PackageFiles(e.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !has_gno_files {
+            return Err(PackageManagerError::PackageFiles(
+                "No .gno files found".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Retrieves the list of files in a package
     async fn get_package_files(&self, pkg_path: &str) -> Result<Vec<String>, PackageManagerError> {
         let encoded_path = general_purpose::STANDARD.encode(pkg_path.as_bytes());
@@ -148,7 +310,7 @@ impl PackageManager {
         Ok(content)
     }
 
-    /// Sends a query to the RPC endpoint
+    /// Sends a query to the RPC endpoint (core function)
     async fn query_rpc(&self, data: &str) -> Result<String, PackageManagerError> {
         let request = RpcRequest {
             jsonrpc: "2.0".to_string(),
