@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
 use indexmap::IndexMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use tree_sitter::{Parser, Query, StreamingIteratorMut};
 
