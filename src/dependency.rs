@@ -16,6 +16,8 @@ pub struct DependencyResolver {
     parser: Parser,
     package_query: Query,
     import_query: Query,
+    /// strategy for resolving dependencies
+    strategy: Box<dyn ResolutionStrategy>,
 }
 
 impl DependencyResolver {
@@ -74,6 +76,7 @@ impl DependencyResolver {
             parser,
             package_query,
             import_query,
+            strategy: Box::new(TopoSort),
         })
     }
 
@@ -138,54 +141,23 @@ impl DependencyResolver {
         &self,
         packages: &HashMap<String, PackageDependency>,
     ) -> Vec<String> {
-        let (mut dependency_count, dependents) = self.build_dependency_graph(packages);
-
-        let mut queue: VecDeque<String> = dependency_count
-            .iter()
-            .filter(|(_, count)| **count == 0)
-            .map(|(name, _)| name.clone())
-            .collect();
-
-        let mut result = Vec::new();
-
-        while let Some(pkg_name) = queue.pop_front() {
-            result.push(pkg_name.clone());
-
-            if let Some(deps) = dependents.get(&pkg_name) {
-                for dep in deps {
-                    if let Some(count) = dependency_count.get_mut(dep) {
-                        *count -= 1;
-                        if *count == 0 {
-                            queue.push_back(dep.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        // add any remaining packages (cycles)
-        for (name, count) in dependency_count {
-            if count > 0 && !result.contains(&name) {
-                result.push(name);
-            }
-        }
-
-        result
+        let graph = self.build_dependency_graph(packages);
+        self.strategy.resolve(&graph)
     }
 
     fn build_dependency_graph(
         &self,
         packages: &HashMap<String, PackageDependency>,
-    ) -> (IndexMap<String, usize>, IndexMap<String, Vec<String>>) {
+    ) -> DependencyGraph {
         // when deploying, the dependency order of packages is important.
         // so we need to ensure consistency in topological sorting.
-        let mut dependency_count: IndexMap<String, usize> = IndexMap::new();
-        let mut dependents: IndexMap<String, Vec<String>> = IndexMap::new();
+        let mut in_degree: IndexMap<String, usize> = IndexMap::new();
+        let mut adj: IndexMap<String, Vec<String>> = IndexMap::new();
 
         // initialize all packages with zero dependencies
         for package_name in packages.keys() {
-            dependency_count.insert(package_name.clone(), 0);
-            dependents.insert(package_name.clone(), Vec::new());
+            in_degree.insert(package_name.clone(), 0);
+            adj.insert(package_name.clone(), Vec::new());
         }
 
         // build dependency relationships
@@ -193,16 +165,82 @@ impl DependencyResolver {
             for import in &pkg.imports {
                 if packages.contains_key(import) {
                     // increment dependency count for the importing package
-                    *dependency_count.entry(pkg_name.clone()).or_insert(0) += 1;
+                    *in_degree.get_mut(pkg_name).unwrap() += 1;
                     // add the importing package as a dependent of the imported package
-                    dependents
-                        .entry(import.clone())
-                        .or_default()
-                        .push(pkg_name.clone());
+                    adj.get_mut(import).unwrap().push(pkg_name.clone());
                 }
             }
         }
 
-        (dependency_count, dependents)
+        DependencyGraph { in_degree, adj }
+    }
+
+    /// set the resolution strategy for the dependency resolver
+    #[allow(unused)]
+    fn with_strategy<S: ResolutionStrategy + 'static>(mut self, st: S) -> Self {
+        self.strategy = Box::new(st);
+        self
+    }
+}
+
+struct DependencyGraph {
+    /// number of incoming edges for each package
+    in_degree: IndexMap<String, usize>,
+    /// list of packages that each package depends on
+    adj: IndexMap<String, Vec<String>>,
+}
+
+/// Strategy that takes a dependency graph and returns deployment order (or failure info.)
+/// This type is designed to allow using different SAT solvers when needed,
+/// as Gno's package system may change in the future to consider other metadata such as versions.
+trait ResolutionStrategy {
+    fn resolve(&self, graph: &DependencyGraph) -> Vec<String>;
+}
+
+pub struct TopoSort;
+
+impl ResolutionStrategy for TopoSort {
+    fn resolve(&self, graph: &DependencyGraph) -> Vec<String> {
+        let mut in_deg = graph.in_degree.clone();
+        let mut q = VecDeque::new();
+        let mut order = Vec::new();
+
+        // start with 0-degree nodes
+        for (node, &deg) in &in_deg {
+            if deg == 0 {
+                q.push_back(node.clone());
+            }
+        }
+
+        while let Some(u) = q.pop_front() {
+            order.push(u.clone());
+            for v in &graph.adj[&u] {
+                let e = in_deg.get_mut(v).unwrap();
+                *e -= 1;
+                if *e == 0 {
+                    q.push_back(v.clone());
+                }
+            }
+        }
+
+        // add any remaining packages (cycles)
+        for (node, &deg) in &in_deg {
+            if deg > 0 && !order.contains(node) {
+                order.push(node.clone());
+            }
+        }
+
+        order
+    }
+}
+
+/// Resolution strategy that uses a SAT solver to find a valid deployment order.
+/// This is a placeholder for future implementation.
+#[allow(unused)]
+struct SatResolver;
+
+impl ResolutionStrategy for SatResolver {
+    fn resolve(&self, _graph: &DependencyGraph) -> Vec<String> {
+        unimplemented!()
     }
 }
