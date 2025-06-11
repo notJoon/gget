@@ -182,6 +182,7 @@ impl PackageManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn resolve_all_dependencies(
         &self,
         root_pkg: &str,
@@ -214,6 +215,7 @@ impl PackageManager {
         Ok(all_deps)
     }
 
+    #[allow(dead_code)]
     async fn analyze_package_dependencies(
         &self,
         pkg_path: &str,
