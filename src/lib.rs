@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod dependency;
 pub mod fetch;
 pub mod query;
 
