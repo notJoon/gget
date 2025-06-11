@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use indexmap::IndexMap;
 
 use tree_sitter::{Parser, Query, StreamingIteratorMut};
 
@@ -76,7 +77,7 @@ impl DependencyResolver {
         })
     }
 
-    /// Extract dependencies from Gno source code
+    /// extract dependencies from Gno source code
     pub fn extract_dependencies(
         &mut self,
         source_code: &str,
@@ -90,7 +91,7 @@ impl DependencyResolver {
         let mut current_package = String::new();
         let mut imports = HashSet::new();
 
-        // Extract package name first
+        // extract package name first
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut package_matches =
             cursor.matches(&self.package_query, root_node, source_code.as_bytes());
@@ -107,7 +108,7 @@ impl DependencyResolver {
             }
         }
 
-        // Extract imports separately for better performance
+        // extract imports separately for better performance
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut import_matches =
             cursor.matches(&self.import_query, root_node, source_code.as_bytes());
@@ -121,7 +122,7 @@ impl DependencyResolver {
                         .map_err(|e| PackageManagerError::Rpc(format!("UTF8 error: {}", e)))?
                         .trim_matches('"');
 
-                    // Only include `gno.land` imports for dependency resolution for now.
+                    // only include `gno.land` imports for dependency resolution for now.
                     // TODO: Once bridge support begins, other prefixes besides `gno.land` may be supported in the future.
                     if import_text.starts_with("gno.land/") {
                         imports.insert(import_text.to_string());
@@ -175,23 +176,25 @@ impl DependencyResolver {
     fn build_dependency_graph(
         &self,
         packages: &HashMap<String, PackageDependency>,
-    ) -> (HashMap<String, usize>, HashMap<String, Vec<String>>) {
-        let mut dependency_count: HashMap<String, usize> = HashMap::new();
-        let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+    ) -> (IndexMap<String, usize>, IndexMap<String, Vec<String>>) {
+        // when deploying, the dependency order of packages is important.
+        // so we need to ensure consistency in topological sorting.
+        let mut dependency_count: IndexMap<String, usize> = IndexMap::new();
+        let mut dependents: IndexMap<String, Vec<String>> = IndexMap::new();
 
-        // Initialize all packages with zero dependencies
+        // initialize all packages with zero dependencies
         for package_name in packages.keys() {
             dependency_count.insert(package_name.clone(), 0);
             dependents.insert(package_name.clone(), Vec::new());
         }
 
-        // Build dependency relationships
+        // build dependency relationships
         for (pkg_name, pkg) in packages {
             for import in &pkg.imports {
                 if packages.contains_key(import) {
-                    // Increment dependency count for the importing package
+                    // increment dependency count for the importing package
                     *dependency_count.entry(pkg_name.clone()).or_insert(0) += 1;
-                    // Add the importing package as a dependent of the imported package
+                    // add the importing package as a dependent of the imported package
                     dependents
                         .entry(import.clone())
                         .or_default()
