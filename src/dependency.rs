@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use tree_sitter::{Parser, Query, StreamingIteratorMut};
+use tree_sitter::{Parser, Query, QueryCursor, StreamingIteratorMut};
 
 use crate::fetch::PackageManagerError;
 
@@ -16,6 +16,7 @@ pub struct DependencyResolver {
     parser: Parser,
     package_query: Query,
     import_query: Query,
+    cursor: QueryCursor,
     /// strategy for resolving dependencies
     strategy: Box<dyn ResolutionStrategy>,
 }
@@ -39,36 +40,18 @@ impl DependencyResolver {
         let import_query = Query::new(
             &language.into(),
             r#"
-            ; Single import with interpreted string (double quotes)
-            (import_declaration
-              (import_spec 
-                path: (interpreted_string_literal) @import))
-            
-            ; Group import with interpreted string
-            (import_declaration
-              (import_spec_list
-                (import_spec
-                  path: (interpreted_string_literal) @import)))
-            
-            ; Named import with interpreted string (e.g., alias "path")
-            (import_declaration
-              (import_spec 
-                name: (package_identifier) @alias
-                path: (interpreted_string_literal) @import))
+; capture all import cases at once
+(import_declaration
+    (import_spec_list
+    (import_spec
+        name: (package_identifier)? @alias
+        path: (interpreted_string_literal) @import)))
 
-            ; Group named import with interpreted string
-            (import_declaration
-              (import_spec_list
-                (import_spec
-                  name: (package_identifier) @alias
-                  path: (interpreted_string_literal) @import)))
-
-            ; Blank import (e.g., _ "path") - capture it but filtering it out
-            (import_declaration
-              (import_spec 
-                name: (blank_identifier)
-                path: (interpreted_string_literal) @import))
-            "#,
+; single import case
+(import_declaration
+    (import_spec
+    name: (package_identifier)? @alias
+    path: (interpreted_string_literal) @import))"#,
         )
         .map_err(|e| PackageManagerError::Rpc(format!("Failed to create import query: {}", e)))?;
 
@@ -76,11 +59,12 @@ impl DependencyResolver {
             parser,
             package_query,
             import_query,
+            cursor: QueryCursor::new(),
             strategy: Box::new(TopoSort),
         })
     }
 
-    /// extract dependencies from Gno source code
+    /// Extract dependencies from Gno source code
     pub fn extract_dependencies(
         &mut self,
         source_code: &str,
@@ -91,44 +75,38 @@ impl DependencyResolver {
             .ok_or_else(|| PackageManagerError::Rpc("Failed to parse source code".to_string()))?;
 
         let root_node = tree.root_node();
+        let bytes = source_code.as_bytes();
+
+        // Extract package name
         let mut current_package = String::new();
-        let mut imports = HashSet::new();
-
-        // extract package name first
-        let mut cursor = tree_sitter::QueryCursor::new();
-        let mut package_matches =
-            cursor.matches(&self.package_query, root_node, source_code.as_bytes());
-
+        let mut package_matches = self.cursor.matches(&self.package_query, root_node, bytes);
         while let Some(matched) = package_matches.next_mut() {
             for capture in matched.captures {
                 if self.package_query.capture_names()[capture.index as usize] == "package" {
                     current_package = capture
                         .node
-                        .utf8_text(source_code.as_bytes())
+                        .utf8_text(bytes)
                         .map_err(|e| PackageManagerError::Rpc(format!("UTF8 error: {}", e)))?
                         .to_string();
                 }
             }
         }
 
-        // extract imports separately for better performance
-        let mut cursor = tree_sitter::QueryCursor::new();
-        let mut import_matches =
-            cursor.matches(&self.import_query, root_node, source_code.as_bytes());
-
+        // Extract imports
+        let mut imports = HashSet::new();
+        let mut import_matches = self.cursor.matches(&self.import_query, root_node, bytes);
         while let Some(matched) = import_matches.next_mut() {
             for capture in matched.captures {
                 if self.import_query.capture_names()[capture.index as usize] == "import" {
                     let import_text = capture
                         .node
-                        .utf8_text(source_code.as_bytes())
+                        .utf8_text(bytes)
                         .map_err(|e| PackageManagerError::Rpc(format!("UTF8 error: {}", e)))?
-                        .trim_matches('"');
+                        .trim_matches('"')
+                        .to_string();
 
-                    // only include `gno.land` imports for dependency resolution for now.
-                    // TODO: Once bridge support begins, other prefixes besides `gno.land` may be supported in the future.
                     if import_text.starts_with("gno.land/") {
-                        imports.insert(import_text.to_string());
+                        imports.insert(import_text);
                     }
                 }
             }
