@@ -63,6 +63,9 @@ jobs:
         VERSION=$(cargo metadata --format-version=1 | jq -r '.packages[0].version')
         echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+        # Fetch latest tags
+        git fetch --tags -f origin
+        
         # delete existing tag if exists
         if git rev-parse "v$VERSION" >/dev/null 2>&1; then
           git tag -d "v$VERSION"
@@ -70,7 +73,7 @@ jobs:
         fi
         
         git tag -a "v$VERSION" -m "Release v$VERSION"
-        git push origin "v$VERSION"
+        git push origin "v$VERSION" --force
         # wait for tag to be propagated to GitHub
         sleep 5
 
