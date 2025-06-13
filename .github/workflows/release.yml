@@ -1,10 +1,42 @@
 name: Release
 
 on:
-  workflow_call:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'force release'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
+  check-pr-count:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Check PR count
+        id: check
+        run: |
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          PR_COUNT=$(git log --merges --since="$(date -d '7 days ago' +%Y-%m-%d)" | grep -c "Merge pull request")
+          if [ $PR_COUNT -ge 5 ]; then
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          fi
+
   release:
+    needs: check-pr-count
+    if: needs.check-pr-count.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
