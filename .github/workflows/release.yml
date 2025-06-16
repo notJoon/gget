@@ -28,7 +28,9 @@ jobs:
             exit 0
           fi
           
-          PR_COUNT=$(git log --merges --since="$(date -d '7 days ago' +%Y-%m-%d)" | grep -c "Merge pull request")
+          # Get date 7 days ago in a portable way
+          SEVEN_DAYS_AGO=$(date -v-7d +%Y-%m-%d 2>/dev/null || date -d "7 days ago" +%Y-%m-%d)
+          PR_COUNT=$(git log --merges --since="$SEVEN_DAYS_AGO" | grep -c "Merge pull request")
           if [ $PR_COUNT -ge 5 ]; then
             echo "should_release=true" >> $GITHUB_OUTPUT
           else
