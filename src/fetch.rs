@@ -3,11 +3,15 @@ use reqwest::{Client, Error as ReqwestError};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 
 use crate::cache::{CacheError, HybridCache};
 use crate::dependency::{DependencyError, DependencyResolver, PackageDependency};
+use crate::parallel::{
+    DownloadError, DownloadManager, DownloadSummary, DownloadTask, ParallelDownloadOptions,
+};
 use crate::query::{RpcParams, RpcRequest, RpcResponse};
 use crate::DEFAULT_RPC_ENDPOINT;
 
@@ -47,10 +51,11 @@ pub enum PackageManagerError {
     Dependency(#[from] DependencyError),
 }
 
+#[derive(Clone)]
 pub struct PackageManager {
     rpc_endpoint: String,
     http_client: Client,
-    cache: HybridCache,
+    cache: Arc<HybridCache>,
 }
 
 impl PackageManager {
@@ -63,7 +68,7 @@ impl PackageManager {
         Self {
             rpc_endpoint: endpoint,
             http_client,
-            cache,
+            cache: Arc::new(cache),
         }
     }
 
@@ -332,5 +337,80 @@ impl PackageManager {
         }
 
         Ok(rpc_response.result.response.response_base.data)
+    }
+
+    /// Download multiple packages concurrently
+    /// TODO: should be default method.
+    pub async fn download_packages_parallel(
+        &self,
+        packages: Vec<&str>,
+        target_dir: &Path,
+        options: ParallelDownloadOptions,
+    ) -> Result<DownloadSummary, PackageManagerError> {
+        let download_manager = DownloadManager::new(options.max_concurrent);
+
+        // Queue all packages
+        for (idx, package) in packages.iter().enumerate() {
+            let task = DownloadTask {
+                package_id: package.to_string(),
+                package_path: package.to_string(),
+                target_dir: target_dir.join(package),
+                priority: (packages.len() - idx) as u8, // Earlier packages have higher priority
+                retry_config: options.retry_config.clone(),
+            };
+            download_manager
+                .queue_download(task)
+                .await
+                .map_err(|e| PackageManagerError::Rpc(e.to_string()))?;
+        }
+
+        // Create a closure that captures self for downloading
+        let self_clone = self.clone();
+        let download_fn = move |task: DownloadTask| {
+            let pm = self_clone.clone();
+            Box::pin(async move {
+                pm.download_package(&task.package_path, &task.target_dir)
+                    .await
+                    .map_err(|e| DownloadError::PackageManager(e))
+            }) as futures::future::BoxFuture<'static, Result<(), DownloadError>>
+        };
+
+        // Process queue with progress tracking
+        let summary = download_manager
+            .process_queue(download_fn)
+            .await
+            .map_err(|e| PackageManagerError::Rpc(e.to_string()))?;
+
+        // Print summary if progress is enabled
+        if options.show_progress {
+            println!("\n{}", summary);
+        }
+
+        Ok(summary)
+    }
+
+    /// Download package with its dependencies in parallel
+    pub async fn download_with_deps_parallel(
+        &self,
+        package: &str,
+        target_dir: &Path,
+        options: ParallelDownloadOptions,
+    ) -> Result<DownloadSummary, PackageManagerError> {
+        println!("Analyzing dependencies for {}...", package);
+
+        // First, analyze all dependencies
+        let all_deps = self.resolve_all_dependencies(package).await?;
+
+        // Convert to package list
+        let mut packages: Vec<&str> = all_deps.keys().map(|s| s.as_str()).collect();
+
+        // Sort packages for consistent ordering
+        packages.sort();
+
+        println!("Found {} packages to download", packages.len());
+
+        // Download all packages in parallel
+        self.download_packages_parallel(packages, target_dir, options)
+            .await
     }
 }
