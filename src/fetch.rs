@@ -7,7 +7,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::cache::{CacheError, HybridCache};
-use crate::dependency::{DependencyResolver, PackageDependency};
+use crate::dependency::{DependencyError, DependencyResolver, PackageDependency};
 use crate::query::{RpcParams, RpcRequest, RpcResponse};
 use crate::DEFAULT_RPC_ENDPOINT;
 
@@ -18,22 +18,33 @@ const TTL: u64 = 24 * 3600;
 pub enum PackageManagerError {
     #[error("HTTP request failed: {0}")]
     Http(#[from] ReqwestError),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
     #[error("JSON serialization/deserialization error: {0}")]
     Json(#[from] serde_json::Error),
+
     #[error("Base64 decoding error: {0}")]
     Base64(#[from] base64::DecodeError),
+
     #[error("RPC error: {0}")]
     Rpc(String),
+
     #[error("Failed to create target directory: {0}")]
     DirectoryCreation(String),
+
     #[error("Failed to get package files: {0}")]
     PackageFiles(String),
+
     #[error("Failed to get file content for {file}: {error}")]
     FileContent { file: String, error: String },
+
     #[error("Cache error: {0}")]
     Cache(#[from] CacheError),
+
+    #[error("Dependency error: {0}")]
+    Dependency(#[from] DependencyError),
 }
 
 pub struct PackageManager {
@@ -261,12 +272,7 @@ impl PackageManager {
 
                         // basic syntax validation
                         let content = std::fs::read_to_string(entry.path())?;
-                        match resolver.extract_dependencies(&content) {
-                            Ok(_) => continue,
-                            Err(e) => {
-                                return Err(PackageManagerError::PackageFiles(e.to_string()));
-                            }
-                        }
+                        resolver.extract_dependencies(&content)?;
                     }
                 }
             }

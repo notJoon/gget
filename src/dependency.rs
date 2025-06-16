@@ -3,7 +3,26 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIteratorMut};
 
-use crate::fetch::PackageManagerError;
+#[derive(Debug, thiserror::Error)]
+pub enum DependencyError {
+    #[error("Failed to set language: {0}")]
+    LanguageSetup(String),
+
+    #[error("Failed to create query: {0}")]
+    QueryCreation(String),
+
+    #[error("Failed to parse source code")]
+    ParseError,
+
+    #[error("UTF-8 decoding error: {0}")]
+    Utf8Error(String),
+
+    #[error("Package not found: {0}")]
+    PackageNotFound(String),
+
+    #[error("Circular dependency detected")]
+    CircularDependency,
+}
 
 #[derive(Debug, Clone)]
 pub struct PackageDependency {
@@ -22,18 +41,18 @@ pub struct DependencyResolver {
 }
 
 impl DependencyResolver {
-    pub fn new() -> Result<Self, PackageManagerError> {
+    pub fn new() -> Result<Self, DependencyError> {
         let mut parser = Parser::new();
         let language = tree_sitter_go::LANGUAGE;
         parser
             .set_language(&language.into())
-            .map_err(|e| PackageManagerError::Rpc(format!("Failed to set language: {}", e)))?;
+            .map_err(|e| DependencyError::LanguageSetup(e.to_string()))?;
 
         let package_query = Query::new(
             &language.into(),
             r#"(package_clause (package_identifier) @package)"#,
         )
-        .map_err(|e| PackageManagerError::Rpc(format!("Failed to create package query: {}", e)))?;
+        .map_err(|e| DependencyError::QueryCreation(format!("package query: {}", e)))?;
 
         // TODO: should we consider raw strings?
         // TODO: support dot imports
@@ -53,7 +72,7 @@ impl DependencyResolver {
     name: (package_identifier)? @alias
     path: (interpreted_string_literal) @import))"#,
         )
-        .map_err(|e| PackageManagerError::Rpc(format!("Failed to create import query: {}", e)))?;
+        .map_err(|e| DependencyError::QueryCreation(format!("import query: {}", e)))?;
 
         Ok(Self {
             parser,
@@ -68,11 +87,11 @@ impl DependencyResolver {
     pub fn extract_dependencies(
         &mut self,
         source_code: &str,
-    ) -> Result<(String, HashSet<String>), PackageManagerError> {
+    ) -> Result<(String, HashSet<String>), DependencyError> {
         let tree = self
             .parser
             .parse(source_code, None)
-            .ok_or_else(|| PackageManagerError::Rpc("Failed to parse source code".to_string()))?;
+            .ok_or(DependencyError::ParseError)?;
 
         let root_node = tree.root_node();
         let bytes = source_code.as_bytes();
@@ -86,7 +105,7 @@ impl DependencyResolver {
                     current_package = capture
                         .node
                         .utf8_text(bytes)
-                        .map_err(|e| PackageManagerError::Rpc(format!("UTF8 error: {}", e)))?
+                        .map_err(|e| DependencyError::Utf8Error(e.to_string()))?
                         .to_string();
                 }
             }
@@ -101,7 +120,7 @@ impl DependencyResolver {
                     let import_text = capture
                         .node
                         .utf8_text(bytes)
-                        .map_err(|e| PackageManagerError::Rpc(format!("UTF8 error: {}", e)))?
+                        .map_err(|e| DependencyError::Utf8Error(e.to_string()))?
                         .trim_matches('"')
                         .to_string();
 

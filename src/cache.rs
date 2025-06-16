@@ -15,6 +15,7 @@ use tokio::{fs, sync::Mutex, time};
 pub enum CacheError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
     #[error("JSON serialization/deserialization error: {0}")]
     // TODO: consider to use CBOR instead of JSON to reduce size
     Json(#[from] serde_json::Error),
