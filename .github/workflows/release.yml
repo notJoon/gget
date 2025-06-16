@@ -64,17 +64,24 @@ jobs:
         VERSION=$(cargo metadata --format-version=1 | jq -r '.packages[0].version')
         echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-        # Fetch latest tags
+        # Fetch all tags and ensure we have the latest state
         git fetch --tags -f origin
         
-        # delete existing tag if exists
+        # Check if tag exists and if it points to a different commit
         if git rev-parse "v$VERSION" >/dev/null 2>&1; then
-          git tag -d "v$VERSION"
-          git push origin ":refs/tags/v$VERSION"
+          if [ "$(git rev-parse "v$VERSION")" != "$(git rev-parse HEAD)" ]; then
+            echo "Tag v$VERSION exists but points to a different commit. Deleting and recreating..."
+            git tag -d "v$VERSION"
+            git push origin ":refs/tags/v$VERSION"
+          else
+            echo "Tag v$VERSION already exists and points to the correct commit. Skipping tag creation."
+            exit 0
+          fi
         fi
         
+        # Create and push the new tag
         git tag -a "v$VERSION" -m "Release v$VERSION"
-        git push origin "v$VERSION" --force
+        git push origin "v$VERSION"
         # wait for tag to be propagated to GitHub
         sleep 5
 
