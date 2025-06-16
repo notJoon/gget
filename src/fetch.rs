@@ -260,30 +260,18 @@ impl PackageManager {
     pub async fn validate_package(&self, target_dir: &Path) -> Result<(), PackageManagerError> {
         // when users deploy packages to the chain, the `gnokey` only recognizes and deploys
         // `gno.mod` and `*.gno` files. Therefore, this check is actually meaningless.
-        let mut has_gno_files = false;
-
         let mut resolver = DependencyResolver::new()?;
 
-        if let Ok(entries) = std::fs::read_dir(target_dir) {
-            for entry in entries.flatten() {
-                if let Some(ext) = entry.path().extension() {
-                    if ext == "gno" {
-                        has_gno_files = true;
+        // Use the new directory-based method to validate all .gno files recursively
+        let packages = resolver.extract_dependencies_from_directory(target_dir)?;
 
-                        // basic syntax validation
-                        let content = std::fs::read_to_string(entry.path())?;
-                        resolver.extract_dependencies(&content)?;
-                    }
-                }
-            }
-        }
-
-        if !has_gno_files {
+        if packages.is_empty() {
             return Err(PackageManagerError::PackageFiles(
                 "No .gno files found".to_string(),
             ));
         }
 
+        // All files were successfully parsed if we got here
         Ok(())
     }
 
